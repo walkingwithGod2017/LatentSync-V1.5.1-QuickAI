@@ -1,6 +1,7 @@
 # Adapted from https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/attention.py
 
 from dataclasses import dataclass
+import os
 from typing import Optional
 
 import torch
@@ -13,6 +14,16 @@ from diffusers.utils import BaseOutput
 from diffusers.models.attention import FeedForward, AdaLayerNorm
 
 from einops import rearrange, repeat
+
+try:
+    from flash_attn import flash_attn_func
+except Exception:
+    flash_attn_func = None
+
+
+def use_flash_attn_2():
+    value = os.getenv("LATENTSYNC_FLASH_ATTN2", "1").strip().lower()
+    return flash_attn_func is not None and value not in {"0", "false", "no", "off"}
 
 
 @dataclass
@@ -251,6 +262,7 @@ class Attention(nn.Module):
         if self.group_norm is not None:
             hidden_states = self.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
+        is_self_attention = encoder_hidden_states is None
         query = self.to_q(hidden_states)
         query = self.split_heads(query)
 
@@ -267,8 +279,23 @@ class Attention(nn.Module):
                 attention_mask = F.pad(attention_mask, (0, target_length), value=0.0)
                 attention_mask = attention_mask.repeat_interleave(self.heads, dim=0)
 
-        # Use PyTorch native implementation of FlashAttention-2
-        hidden_states = F.scaled_dot_product_attention(query, key, value, attn_mask=attention_mask)
+        if (
+            use_flash_attn_2()
+            and is_self_attention
+            and not self.training
+            and attention_mask is None
+            and query.is_cuda
+            and query.dtype in {torch.float16, torch.bfloat16}
+        ):
+            hidden_states = flash_attn_func(
+                query.permute(0, 2, 1, 3).contiguous(),
+                key.permute(0, 2, 1, 3).contiguous(),
+                value.permute(0, 2, 1, 3).contiguous(),
+                dropout_p=0.0,
+                causal=False,
+            ).permute(0, 2, 1, 3)
+        else:
+            hidden_states = F.scaled_dot_product_attention(query, key, value, attn_mask=attention_mask)
 
         hidden_states = self.concat_heads(hidden_states)
 
