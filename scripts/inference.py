@@ -24,20 +24,14 @@ from latentsync.whisper.audio2feature import Audio2Feature
 from DeepCache import DeepCacheSDHelper
 
 
-def main(config, args):
-    if not os.path.exists(args.video_path):
-        raise RuntimeError(f"Video path '{args.video_path}' not found")
-    if not os.path.exists(args.audio_path):
-        raise RuntimeError(f"Audio path '{args.audio_path}' not found")
-
+def get_inference_dtype():
     # Check if the GPU supports float16
     is_fp16_supported = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] > 7
-    dtype = torch.float16 if is_fp16_supported else torch.float32
+    return torch.float16 if is_fp16_supported else torch.float32
 
-    print(f"Input video path: {args.video_path}")
-    print(f"Input audio path: {args.audio_path}")
-    print(f"Loaded checkpoint path: {args.inference_ckpt_path}")
 
+def build_pipeline(config, args, dtype=None):
+    dtype = dtype or get_inference_dtype()
     scheduler = DDIMScheduler.from_pretrained("configs")
 
     if config.model.cross_attention_dim == 768:
@@ -50,6 +44,7 @@ def main(config, args):
     audio_encoder = Audio2Feature(
         model_path=whisper_model_path,
         device="cuda",
+        audio_embeds_cache_dir=getattr(args, "audio_embeds_cache_dir", "temp/cache/audio_embeds"),
         num_frames=config.data.num_frames,
         audio_feat_length=config.data.audio_feat_length,
     )
@@ -78,6 +73,20 @@ def main(config, args):
         helper = DeepCacheSDHelper(pipe=pipeline)
         helper.set_params(cache_interval=3, cache_branch_id=0)
         helper.enable()
+        pipeline._deepcache_helper = helper
+
+    return pipeline, dtype
+
+
+def run_pipeline(pipeline, config, args, dtype):
+    if not os.path.exists(args.video_path):
+        raise RuntimeError(f"Video path '{args.video_path}' not found")
+    if not os.path.exists(args.audio_path):
+        raise RuntimeError(f"Audio path '{args.audio_path}' not found")
+
+    print(f"Input video path: {args.video_path}")
+    print(f"Input audio path: {args.audio_path}")
+    print(f"Loaded checkpoint path: {args.inference_ckpt_path}")
 
     if args.seed != -1:
         set_seed(args.seed)
@@ -96,9 +105,18 @@ def main(config, args):
         weight_dtype=dtype,
         width=config.data.resolution,
         height=config.data.resolution,
+        video_fps=config.data.video_fps,
+        audio_sample_rate=config.data.audio_sample_rate,
         mask_image_path=config.data.mask_image_path,
         temp_dir=args.temp_dir,
+        cache_dir=getattr(args, "cache_dir", None),
+        profile=getattr(args, "profile", False),
     )
+
+
+def main(config, args):
+    pipeline, dtype = build_pipeline(config, args)
+    return run_pipeline(pipeline, config, args, dtype)
 
 
 if __name__ == "__main__":
@@ -113,6 +131,9 @@ if __name__ == "__main__":
     parser.add_argument("--temp_dir", type=str, default="temp")
     parser.add_argument("--seed", type=int, default=1247)
     parser.add_argument("--enable_deepcache", action="store_true")
+    parser.add_argument("--audio_embeds_cache_dir", type=str, default="temp/cache/audio_embeds")
+    parser.add_argument("--cache_dir", type=str, default=None)
+    parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
 
     config = OmegaConf.load(args.unet_config_path)

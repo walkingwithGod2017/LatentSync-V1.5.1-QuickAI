@@ -22,6 +22,9 @@ class AlignRestore(object):
             self.fill_value = torch.tensor([127, 127, 127], device=device, dtype=dtype)
             self.mask = torch.ones((1, 1, self.face_size[1], self.face_size[0]), device=device, dtype=dtype)
 
+    def reset_smoothing(self):
+        self.p_bias = None
+
     def align_warp_face(self, img, landmarks3, smooth=True):
         affine_matrix, self.p_bias = self.transformation_from_points(
             landmarks3, self.face_template, smooth, self.p_bias
@@ -46,6 +49,8 @@ class AlignRestore(object):
 
         if isinstance(affine_matrix, np.ndarray):
             affine_matrix = torch.from_numpy(affine_matrix).to(device=self.device, dtype=self.dtype).unsqueeze(0)
+        else:
+            affine_matrix = affine_matrix.to(device=self.device, dtype=self.dtype)
 
         inv_affine_matrix = kornia.geometry.transform.invert_affine_transform(affine_matrix)
         face = face.to(dtype=self.dtype).unsqueeze(0)

@@ -1,13 +1,35 @@
 import torch
 import gradio as gr
 from pathlib import Path
-from scripts.inference import main
+from scripts.inference import build_pipeline, run_pipeline
 from omegaconf import OmegaConf
 import argparse
 from datetime import datetime
+import threading
 
 CONFIG_PATH = Path("configs/unet/stage2_512.yaml")
 CHECKPOINT_PATH = Path("checkpoints/latentsync_unet.pt")
+CONFIG = OmegaConf.load(CONFIG_PATH)
+_PIPELINE = None
+_PIPELINE_DTYPE = None
+_PIPELINE_KEY = None
+_PIPELINE_LOCK = threading.Lock()
+
+
+def get_pipeline(args):
+    global _PIPELINE, _PIPELINE_DTYPE, _PIPELINE_KEY
+
+    key = (
+        CHECKPOINT_PATH.absolute().as_posix(),
+        args.enable_deepcache,
+        args.audio_embeds_cache_dir,
+    )
+    if _PIPELINE is not None and _PIPELINE_KEY == key:
+        return _PIPELINE, _PIPELINE_DTYPE
+
+    _PIPELINE, _PIPELINE_DTYPE = build_pipeline(CONFIG, args)
+    _PIPELINE_KEY = key
+    return _PIPELINE, _PIPELINE_DTYPE
 
 
 def process_video(
@@ -30,23 +52,13 @@ def process_video(
     # Set the output path for the processed video
     output_path = str(output_dir / f"{video_file_path.stem}_{current_time}.mp4")  # Change the filename as needed
 
-    config = OmegaConf.load(CONFIG_PATH)
-
-    config["run"].update(
-        {
-            "guidance_scale": guidance_scale,
-            "inference_steps": inference_steps,
-        }
-    )
-
     # Parse the arguments
     args = create_args(video_path, audio_path, output_path, inference_steps, guidance_scale, seed)
 
     try:
-        result = main(
-            config=config,
-            args=args,
-        )
+        with _PIPELINE_LOCK:
+            pipeline, dtype = get_pipeline(args)
+            run_pipeline(pipeline, CONFIG, args, dtype)
         print("Processing completed successfully.")
         return output_path  # Ensure the output path is returned
     except Exception as e:
@@ -67,6 +79,9 @@ def create_args(
     parser.add_argument("--temp_dir", type=str, default="temp")
     parser.add_argument("--seed", type=int, default=1247)
     parser.add_argument("--enable_deepcache", action="store_true")
+    parser.add_argument("--audio_embeds_cache_dir", type=str, default="temp/cache/audio_embeds")
+    parser.add_argument("--cache_dir", type=str, default="temp/cache")
+    parser.add_argument("--profile", action="store_true")
 
     return parser.parse_args(
         [
@@ -86,6 +101,10 @@ def create_args(
             str(seed),
             "--temp_dir",
             "temp",
+            "--audio_embeds_cache_dir",
+            "temp/cache/audio_embeds",
+            "--cache_dir",
+            "temp/cache",
             "--enable_deepcache",
         ]
     )

@@ -4,6 +4,7 @@ from .whisper import load_model
 import numpy as np
 import torch
 import os
+import hashlib
 from pathlib import Path
 
 
@@ -121,8 +122,21 @@ class Audio2Feature:
         if self.audio_embeds_cache_dir == "" or self.audio_embeds_cache_dir is None:
             return self._audio2feat(audio_path)
 
+        stat = os.stat(audio_path)
+        cache_key = "|".join(
+            [
+                os.path.abspath(audio_path),
+                str(stat.st_size),
+                str(stat.st_mtime_ns),
+                str(self.num_frames),
+                str(self.audio_feat_length),
+                str(self.embedding_dim),
+            ]
+        )
+        cache_name = hashlib.sha1(cache_key.encode("utf-8")).hexdigest() + "_embeds.pt"
         audio_embeds_cache_path = os.path.join(
-            self.audio_embeds_cache_dir, os.path.basename(audio_path).replace(".mp4", "_embeds.pt")
+            self.audio_embeds_cache_dir,
+            cache_name,
         )
 
         if os.path.isfile(audio_embeds_cache_path):

@@ -29,7 +29,6 @@ from torchvision import transforms
 from einops import rearrange
 import cv2
 from decord import AudioReader, VideoReader
-import shutil
 import subprocess
 
 
@@ -43,24 +42,49 @@ def read_json(filepath: str):
     return json_dict
 
 
-def read_video(video_path: str, change_fps=True, use_decord=True):
+def get_video_fps(video_path: str) -> float:
+    cap = cv2.VideoCapture(video_path)
+    try:
+        if not cap.isOpened():
+            raise ValueError(f"Could not open video: {video_path}")
+        return float(cap.get(cv2.CAP_PROP_FPS))
+    finally:
+        cap.release()
+
+
+def read_video(video_path: str, change_fps=None, use_decord=True, target_fps=25, temp_dir="temp"):
+    if change_fps is None:
+        source_fps = get_video_fps(video_path)
+        change_fps = abs(source_fps - target_fps) > 0.01
+
     if change_fps:
-        temp_dir = "temp"
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
-        command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -crf 18 {os.path.join(temp_dir, 'video.mp4')}"
-        )
-        subprocess.run(command, shell=True)
-        target_video_path = os.path.join(temp_dir, "video.mp4")
+        target_video_path = os.path.join(temp_dir, "video_fps.mp4")
+        command = [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-y",
+            "-nostdin",
+            "-i",
+            video_path,
+            "-r",
+            str(target_fps),
+            "-crf",
+            "18",
+            target_video_path,
+        ]
+        subprocess.run(command, check=True)
     else:
         target_video_path = video_path
 
     if use_decord:
-        return read_video_decord(target_video_path)
-    else:
-        return read_video_cv2(target_video_path)
+        try:
+            return read_video_decord(target_video_path)
+        except Exception as exc:
+            print(f"decord video read failed, falling back to cv2: {type(exc).__name__} - {exc}")
+
+    return read_video_cv2(target_video_path)
 
 
 def read_video_decord(video_path: str):
@@ -112,17 +136,71 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
     return audio_samples
 
 
-def write_video(video_output_path: str, video_frames: np.ndarray, fps: int):
+def write_video(video_output_path: str, video_frames: np.ndarray, fps: int, crf: int = 13):
     with imageio.get_writer(
         video_output_path,
         fps=fps,
         codec="libx264",
         macro_block_size=None,
-        ffmpeg_params=["-crf", "13"],
+        ffmpeg_params=["-crf", str(crf)],
         ffmpeg_log_level="error",
     ) as writer:
         for video_frame in video_frames:
             writer.append_data(video_frame)
+
+
+def write_video_with_audio(video_output_path: str, video_frames: np.ndarray, audio_path: str, fps: int, crf: int = 18):
+    if len(video_frames) == 0:
+        raise ValueError("No video frames to write.")
+
+    video_output_dir = os.path.dirname(video_output_path)
+    if video_output_dir:
+        os.makedirs(video_output_dir, exist_ok=True)
+
+    height, width = video_frames[0].shape[:2]
+    command = [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{width}x{height}",
+        "-r",
+        str(fps),
+        "-i",
+        "-",
+        "-i",
+        audio_path,
+        "-c:v",
+        "libx264",
+        "-crf",
+        str(crf),
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-q:a",
+        "0",
+        video_output_path,
+    ]
+
+    process = subprocess.Popen(command, stdin=subprocess.PIPE)
+    try:
+        for video_frame in video_frames:
+            frame = np.ascontiguousarray(video_frame, dtype=np.uint8)
+            process.stdin.write(frame.tobytes())
+    finally:
+        if process.stdin is not None:
+            process.stdin.close()
+
+    return_code = process.wait()
+    if return_code != 0:
+        raise RuntimeError(f"ffmpeg failed with exit code {return_code}")
 
 
 def write_video_cv2(video_output_path: str, video_frames: np.ndarray, fps: int):
@@ -267,11 +345,19 @@ def count_video_time(video_path):
     return frame_count / fps
 
 
+_FFMPEG_CHECKED = False
+
+
 def check_ffmpeg_installed():
+    global _FFMPEG_CHECKED
+    if _FFMPEG_CHECKED:
+        return
+
     # Run the ffmpeg command with the -version argument to check if it's installed
-    result = subprocess.run("ffmpeg -version", stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    result = subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if not result.returncode == 0:
         raise FileNotFoundError("ffmpeg not found, please install it by:\n    $ conda install -c conda-forge ffmpeg")
+    _FFMPEG_CHECKED = True
 
 
 def check_model_and_download(ckpt_path: str, huggingface_model_id: str = "ByteDance/LatentSync-1.5"):
