@@ -50,9 +50,21 @@ def maybe_compile_unet(pipeline, args):
     compile_cache_dir = configure_compile_cache(args)
     compile_mode = getattr(args, "compile_mode", "default")
     compile_use_cudagraphs = getattr(args, "compile_use_cudagraphs", False)
+    compile_recompile_limit = getattr(args, "compile_recompile_limit", None)
     if hasattr(torch, "_dynamo") and hasattr(torch._dynamo.config, "allow_unspec_int_on_nn_module"):
         torch._dynamo.config.allow_unspec_int_on_nn_module = True
+    if (
+        compile_recompile_limit is not None
+        and hasattr(torch, "_dynamo")
+        and hasattr(torch._dynamo.config, "recompile_limit")
+    ):
+        torch._dynamo.config.recompile_limit = max(
+            torch._dynamo.config.recompile_limit,
+            int(compile_recompile_limit),
+        )
     print("Compiling UNet with torch.compile(fullgraph=False, dynamic=False)")
+    if compile_recompile_limit is not None:
+        print(f"Compile recompile limit: {torch._dynamo.config.recompile_limit}")
     if compile_use_cudagraphs:
         print(f"Compile mode: {compile_mode}")
         compile_kwargs = {"mode": compile_mode}
@@ -176,6 +188,7 @@ if __name__ == "__main__":
     parser.add_argument("--compile_mode", type=str, default="default")
     parser.add_argument("--compile_use_cudagraphs", action="store_true")
     parser.add_argument("--compile_cache_dir", type=str, default=None)
+    parser.add_argument("--compile_recompile_limit", type=int, default=None)
     args = parser.parse_args()
 
     config = OmegaConf.load(args.unet_config_path)

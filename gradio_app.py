@@ -1,3 +1,4 @@
+import os
 import torch
 import gradio as gr
 from pathlib import Path
@@ -16,6 +17,24 @@ _PIPELINE_KEY = None
 _PIPELINE_LOCK = threading.Lock()
 
 
+def env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    return default if value is None else int(value)
+
+
+COMPILE_UNET = env_bool("LATENTSYNC_COMPILE_UNET", True)
+COMPILE_MODE = os.getenv("LATENTSYNC_COMPILE_MODE", "default")
+COMPILE_CACHE_DIR = os.getenv("LATENTSYNC_COMPILE_CACHE_DIR", "temp/compile_cache")
+COMPILE_RECOMPILE_LIMIT = env_int("LATENTSYNC_COMPILE_RECOMPILE_LIMIT", 32)
+
+
 def get_pipeline(args):
     global _PIPELINE, _PIPELINE_DTYPE, _PIPELINE_KEY
 
@@ -23,6 +42,11 @@ def get_pipeline(args):
         CHECKPOINT_PATH.absolute().as_posix(),
         args.enable_deepcache,
         args.audio_embeds_cache_dir,
+        args.compile_unet,
+        args.compile_mode,
+        args.compile_use_cudagraphs,
+        args.compile_cache_dir,
+        args.compile_recompile_limit,
     )
     if _PIPELINE is not None and _PIPELINE_KEY == key:
         return _PIPELINE, _PIPELINE_DTYPE
@@ -82,32 +106,45 @@ def create_args(
     parser.add_argument("--audio_embeds_cache_dir", type=str, default="temp/cache/audio_embeds")
     parser.add_argument("--cache_dir", type=str, default="temp/cache")
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--compile_unet", action="store_true")
+    parser.add_argument("--compile_mode", type=str, default="default")
+    parser.add_argument("--compile_use_cudagraphs", action="store_true")
+    parser.add_argument("--compile_cache_dir", type=str, default=None)
+    parser.add_argument("--compile_recompile_limit", type=int, default=None)
 
-    return parser.parse_args(
-        [
-            "--inference_ckpt_path",
-            CHECKPOINT_PATH.absolute().as_posix(),
-            "--video_path",
-            video_path,
-            "--audio_path",
-            audio_path,
-            "--video_out_path",
-            output_path,
-            "--inference_steps",
-            str(inference_steps),
-            "--guidance_scale",
-            str(guidance_scale),
-            "--seed",
-            str(seed),
-            "--temp_dir",
-            "temp",
-            "--audio_embeds_cache_dir",
-            "temp/cache/audio_embeds",
-            "--cache_dir",
-            "temp/cache",
-            "--enable_deepcache",
-        ]
-    )
+    argv = [
+        "--inference_ckpt_path",
+        CHECKPOINT_PATH.absolute().as_posix(),
+        "--video_path",
+        video_path,
+        "--audio_path",
+        audio_path,
+        "--video_out_path",
+        output_path,
+        "--inference_steps",
+        str(inference_steps),
+        "--guidance_scale",
+        str(guidance_scale),
+        "--seed",
+        str(seed),
+        "--temp_dir",
+        "temp",
+        "--audio_embeds_cache_dir",
+        "temp/cache/audio_embeds",
+        "--cache_dir",
+        "temp/cache",
+        "--enable_deepcache",
+        "--compile_mode",
+        COMPILE_MODE,
+        "--compile_cache_dir",
+        COMPILE_CACHE_DIR,
+        "--compile_recompile_limit",
+        str(COMPILE_RECOMPILE_LIMIT),
+    ]
+    if COMPILE_UNET:
+        argv.append("--compile_unet")
+
+    return parser.parse_args(argv)
 
 
 # Create Gradio interface
