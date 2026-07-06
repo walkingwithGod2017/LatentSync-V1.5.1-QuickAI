@@ -30,6 +30,42 @@ def get_inference_dtype():
     return torch.float16 if is_fp16_supported else torch.float32
 
 
+def configure_compile_cache(args):
+    compile_cache_dir = os.path.abspath(
+        getattr(args, "compile_cache_dir", None) or os.path.join(args.temp_dir, "compile_cache")
+    )
+    torchinductor_cache_dir = os.path.join(compile_cache_dir, "torchinductor")
+    triton_cache_dir = os.path.join(compile_cache_dir, "triton")
+    os.makedirs(torchinductor_cache_dir, exist_ok=True)
+    os.makedirs(triton_cache_dir, exist_ok=True)
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = torchinductor_cache_dir
+    os.environ["TRITON_CACHE_DIR"] = triton_cache_dir
+    return compile_cache_dir
+
+
+def maybe_compile_unet(pipeline, args):
+    if not getattr(args, "compile_unet", False):
+        return pipeline
+
+    compile_cache_dir = configure_compile_cache(args)
+    compile_mode = getattr(args, "compile_mode", "default")
+    compile_use_cudagraphs = getattr(args, "compile_use_cudagraphs", False)
+    if hasattr(torch, "_dynamo") and hasattr(torch._dynamo.config, "allow_unspec_int_on_nn_module"):
+        torch._dynamo.config.allow_unspec_int_on_nn_module = True
+    print("Compiling UNet with torch.compile(fullgraph=False, dynamic=False)")
+    if compile_use_cudagraphs:
+        print(f"Compile mode: {compile_mode}")
+        compile_kwargs = {"mode": compile_mode}
+    else:
+        print("Compile CUDAGraphs: disabled")
+        if compile_mode != "default":
+            print(f"Compile mode '{compile_mode}' ignored unless --compile_use_cudagraphs is set")
+        compile_kwargs = {"options": {"triton.cudagraphs": False}}
+    print(f"Compile cache dir: {compile_cache_dir}")
+    pipeline.unet = torch.compile(pipeline.unet, fullgraph=False, dynamic=False, **compile_kwargs)
+    return pipeline
+
+
 def build_pipeline(config, args, dtype=None):
     dtype = dtype or get_inference_dtype()
     scheduler = DDIMScheduler.from_pretrained("configs")
@@ -67,6 +103,8 @@ def build_pipeline(config, args, dtype=None):
         unet=unet,
         scheduler=scheduler,
     ).to("cuda")
+
+    pipeline = maybe_compile_unet(pipeline, args)
 
     # use DeepCache
     if args.enable_deepcache:
@@ -134,6 +172,10 @@ if __name__ == "__main__":
     parser.add_argument("--audio_embeds_cache_dir", type=str, default="temp/cache/audio_embeds")
     parser.add_argument("--cache_dir", type=str, default=None)
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--compile_unet", action="store_true")
+    parser.add_argument("--compile_mode", type=str, default="default")
+    parser.add_argument("--compile_use_cudagraphs", action="store_true")
+    parser.add_argument("--compile_cache_dir", type=str, default=None)
     args = parser.parse_args()
 
     config = OmegaConf.load(args.unet_config_path)
