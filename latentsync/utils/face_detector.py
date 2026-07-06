@@ -1,6 +1,9 @@
-from insightface.app import FaceAnalysis
+import onnxruntime as ort
 import numpy as np
 import torch
+ort.preload_dlls(cudnn=False)
+
+from insightface.app import FaceAnalysis
 
 INSIGHTFACE_DETECT_SIZE = 512
 

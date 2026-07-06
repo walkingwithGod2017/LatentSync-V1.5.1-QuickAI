@@ -1,3 +1,4 @@
+import torch
 import gradio as gr
 from pathlib import Path
 from scripts.inference import main
@@ -152,4 +153,4 @@ with gr.Blocks(title="LatentSync demo") as demo:
     )
 
 if __name__ == "__main__":
-    demo.launch(inbrowser=True, share=True)
+    demo.launch(inbrowser=True, share=False)
