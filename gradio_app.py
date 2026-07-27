@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 import argparse
 from datetime import datetime
 import threading
+import time
 
 CONFIG_PATH = Path("configs/unet/stage2_512.yaml")
 CHECKPOINT_PATH = Path("checkpoints/latentsync_unet.pt")
@@ -33,6 +34,13 @@ COMPILE_UNET = env_bool("LATENTSYNC_COMPILE_UNET", True)
 COMPILE_MODE = os.getenv("LATENTSYNC_COMPILE_MODE", "default")
 COMPILE_CACHE_DIR = os.getenv("LATENTSYNC_COMPILE_CACHE_DIR", "temp/compile_cache")
 COMPILE_RECOMPILE_LIMIT = env_int("LATENTSYNC_COMPILE_RECOMPILE_LIMIT", 32)
+
+
+def format_elapsed_time(seconds: float) -> str:
+    minutes, seconds = divmod(seconds, 60)
+    if minutes >= 1:
+        return f"{int(minutes)}m {seconds:.1f}s"
+    return f"{seconds:.1f}s"
 
 
 def get_pipeline(args):
@@ -79,12 +87,15 @@ def process_video(
     # Parse the arguments
     args = create_args(video_path, audio_path, output_path, inference_steps, guidance_scale, seed)
 
+    started_at = time.perf_counter()
     try:
         with _PIPELINE_LOCK:
             pipeline, dtype = get_pipeline(args)
             run_pipeline(pipeline, CONFIG, args, dtype)
-        print("Processing completed successfully.")
-        return output_path  # Ensure the output path is returned
+        elapsed = time.perf_counter() - started_at
+        elapsed_text = f"Generation time: {format_elapsed_time(elapsed)}"
+        print(f"Processing completed successfully. {elapsed_text}")
+        return output_path, elapsed_text
     except Exception as e:
         print(f"Error during processing: {str(e)}")
         raise gr.Error(f"Error during processing: {str(e)}")
@@ -186,6 +197,7 @@ with gr.Blocks(title="LatentSync demo") as demo:
 
         with gr.Column():
             video_output = gr.Video(label="Output Video")
+            generation_time_output = gr.Textbox(label="Generation Time", interactive=False)
 
             gr.Examples(
                 examples=[
@@ -205,7 +217,7 @@ with gr.Blocks(title="LatentSync demo") as demo:
             inference_steps,
             seed,
         ],
-        outputs=video_output,
+        outputs=[video_output, generation_time_output],
     )
 
 if __name__ == "__main__":
